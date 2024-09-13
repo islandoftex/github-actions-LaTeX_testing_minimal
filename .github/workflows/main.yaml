@@ -1,0 +1,77 @@
+name: Test document
+
+# Currently we run in two situations:
+on:
+  # 1) Whenever someone pushes to a branch
+  push:
+  # 2) Whenever a pull request is opened, reopened or gets new commits.
+  pull_request:
+  # This implies that for every push to a local branch in our repo for which a
+  # pull request is open this runs twice. But it's important to ensure that pull
+  # requests get tested, even if their branch comes from a fork.
+
+# Cancel running builds on push on the same branch or pull request
+concurrency:
+  group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  test-document-minimal:
+    # As we use the minimal setup it's even possible to check Windows + Linux + MacOS as GitHub provides hosted runners
+    runs-on: ${{(matrix.platform == 'Linux' && 'ubuntu-22.04') || (matrix.platform == 'Windows' && 'windows-2022') || (matrix.platform == 'macOS' && 'macos-14')}}
+    strategy:
+      matrix:
+        # defining the matrix to create the test cases
+        platform: [Linux, Windows, macOS]
+        texlive: [2022, 2023, 2024]
+        engine: [pdflatex, xelatex, lualatex]
+    name: "Build PDF on ${{ matrix.platform }}, TeXLive ${{ matrix.texlive }}, Engine ${{ matrix.engine }}"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        # This zauguin/install-texlive action supports updates but not older TeX Live versions
+        # So we use this one for the current release and teatimeguest/setup-texlive-action for the older ones
+      - name: Install TeX Live
+        if: ${{ matrix.texlive == 2024 }}
+        uses: zauguin/install-texlive@v3
+        with:
+          # The list of packages to install is in a separate file at .github/tl_packages
+          package_file: .github/tl_packages
+      - name: Install TeX Live
+        if: ${{ matrix.texlive < 2024 }}
+        # Similar action to zauguin/install-texlive@v3, has some drawbacks in mirror selection
+        uses: teatimeguest/setup-texlive-action@v3
+        with:
+          package-file: .github/tl_packages
+          version: ${{ matrix.texlive }}
+      - name: Run latexmk
+        run: "latexmk --${{(matrix.engine == 'pdflatex' && 'pdf') || (matrix.engine == 'xelatex' && 'xelatex') || (matrix.engine == 'lualatex' && 'lualatex')}}"
+      - name: Archive .pdf
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDF-${{matrix.engine}}-${{matrix.texlive}}-${{matrix.platform}}
+          path: "*.pdf"
+          retention-days: 3
+  publish-pdf:
+    runs-on: ubuntu-22.04
+    needs:
+      - test-document-minimal
+    # permissions required to create the release
+    permissions:
+      contents: write
+    steps:
+      - name: Download package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PDF-lualatex-2024-Linux
+          path: pdf-output
+      - name: Publish pdf file
+        # only publish pdf from main branch
+        if: ${{(github.ref == 'refs/heads/main')}}
+        uses: crazy-max/ghaction-github-pages@v4
+        with:
+          target_branch: pdf-output
+          build_dir: pdf-output
+          commit_message: Publish PDF Output
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
